@@ -1,0 +1,111 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+Description: EC2 for thesis
+
+Parameters:
+  LatestAmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
+  dbURL:
+    Type: String
+    NoEcho: true
+  sessionSecret:
+    Type: String
+    NoEcho: true
+  mailAccount:
+    Type: String
+    Default: hola@hola.com
+
+Resources:
+  EC2Instance:
+    Type: AWS::EC2::Instance
+    CreationPolicy:
+      ResourceSignal:
+        Timeout: PT5M
+    Properties:
+      InstanceType: t2.micro
+      ImageId: !Ref LatestAmiId
+      Tags:
+        - Key: Name
+          Value: TEG-Software
+      SecurityGroupIds:
+        - sg-08f7645e967dcfdab
+        - sg-0ed0873533f853c30
+      UserData:
+        "Fn::Base64": !Sub |
+          #!/bin/bash
+
+          # Error handling - ResourceSignal failure
+          notify_failure() {
+            echo 'ERROR'
+            /opt/aws/bin/cfn-signal -e 1 --stack=EC2Stack --resource=EC2Instance
+            exit 1
+          }
+          trap 'notify_failure' ERR
+
+          yum update -y
+          yum install -y git nginx
+
+          touch /etc/yum.repos.d/mongodb-org-7.0.repo
+          printf "[mongodb-org-7.0]\nname=MongoDB Repository\nbaseurl=https://repo.mongodb.org/yum/amazon/2023/mongodb-org/7.0/x86_64/\ngpgcheck=1\nenabled=1\ngpgkey=https://pgp.mongodb.com/server-7.0.asc\n" >> /etc/yum.repos.d/mongodb-org-7.0.repo
+
+          yum install -y mongodb-org
+
+          systemctl start mongod
+
+          export HOME=/home/ec2-user
+          cd /home/ec2-user
+
+          sudo -H -u ec2-user bash -c 'touch /home/ec2-user/.bashrc'
+          sudo -H -u ec2-user bash -c 'curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash'
+
+          sudo -H -u ec2-user bash -c '. ~/.nvm/nvm.sh && nvm install --lts && nvm use --lts && node -v && npm -v'
+
+          sudo -H -u ec2-user bash -c 'git clone https://github.com/chillguire/TEG-Software.git'
+
+          cd TEG-Software
+
+          export DB_URL=${dbURL}
+          export SESSION_SECRET=${sessionSecret}
+          export MAIL_ACCOUNT=${mailAccount}
+
+          touch .env
+          printf "DB_URL = $DB_URL\nSESSION_SECRET = $SESSION_SECRET\nMAIL_ACCOUNT = $MAIL_ACCOUNT\n" >> .env
+
+          sudo -H -u ec2-user bash -c '. ~/.nvm/nvm.sh && nvm ls && nvm use --lts && node -v && npm -v && npm ci && npm install pm2 -g && pm2 start server.js'
+
+          printf "user nginx;\nworker_processes auto;\nerror_log /var/log/nginx/error.log notice;\npid /run/nginx.pid;\ninclude /usr/share/nginx/modules/*.conf;\nevents {\nworker_connections 1024;\n}\nhttp {\nsendfile            on;\ntcp_nopush          on;\nkeepalive_timeout   65;\ntypes_hash_max_size 4096;\ninclude             /etc/nginx/mime.types;\ndefault_type        application/octet-stream;\ninclude /etc/nginx/conf.d/*.conf;\nserver {\nlisten       80;\nlisten       [::]:80;\nserver_name  _;\nroot         /usr/share/nginx/html;\ninclude /etc/nginx/default.d/*.conf;\nlocation / {\nproxy_pass http://localhost:3000;\nproxy_http_version 1.1;\nproxy_set_header Upgrade \$http_upgrade;\nproxy_set_header Connection 'upgrade';\nproxy_set_header Host \$host;\nproxy_cache_bypass \$http_upgrade;\n}\n}\n}" > /etc/nginx/nginx.conf
+
+          service nginx restart
+
+          # Script que inicia el servicio cuando se reanuda la instancia
+          cd /var/lib/cloud/scripts/per-boot
+          sudo touch start.sh
+          chmod 755 start.sh
+          printf '#!/bin/bash\n\nsu - ec2-user -c "cd /home/ec2-user/TEG-Software && git pull && pm2 start server.js"\nsystemctl start nginx' > /var/lib/cloud/scripts/per-boot/start.sh
+
+          # Error handling - ResourceSignal success
+          echo 'todo fino'
+          /opt/aws/bin/cfn-signal -e 0 --stack=EC2Stack --resource=EC2Instance
+
+          sudo shutdown now -h # turn off after creation
+
+          # --- LO DE CADDY PARA HTTPS ---
+          #yum install yum-plugin-copr -y
+          #yum -y copr enable @caddy/caddy epel-7-$(arch)
+          #yum install caddy -y
+
+          #systemctl stop caddy
+          #touch Caddyfile
+
+          #CURRENT_IP=$(curl http://checkip.amazonaws.com)
+          #printf "$CURRENT_IP.nip.io {\n    reverse_proxy localhost:3000\n}" > Caddyfile
+
+          #caddy fmt --overwrite
+          #caddy start
+          # --- LO DE CADDY PARA HTTPS ---
+Outputs:
+  PublicIp:
+    Value: !GetAtt EC2Instance.PublicIp
+  PublicDNS:
+    Value: !GetAtt EC2Instance.PublicDnsName

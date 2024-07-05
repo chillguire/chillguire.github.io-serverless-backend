@@ -1,0 +1,70 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+Description: Backup of github actions conf
+
+Resources:
+  # Crear Identity Provider (IdP) en IAM > Identity providers
+    # Tipo OIDC
+    # https://token.actions.githubusercontent.com
+    # Aud: sts.amazonaws.com
+  #token.actions.githubusercontent.com:
+  #  Type: AWS::IAM::OIDCProvider
+  #  Properties:
+  #    ClientIdList: 
+  #      - sts.amazonaws.com
+  #    ThumbprintList: 
+  #      - String
+  #    Url: https://token.actions.githubusercontent.com
+  ChillguireGitHubAction-AssumeRoleWithAction:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated:
+                - arn:aws:iam::062802124042:oidc-provider/token.actions.githubusercontent.com
+            Action:
+              - sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                "token.actions.githubusercontent.com:aud": "sts.amazonaws.com"
+              ForAnyValue:StringLike:
+                "token.actions.githubusercontent.com:sub": "repo:chillguire/*"
+      Path: /
+      Policies:
+        - PolicyName: ChillguireGitHubAction-Cloudformation
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  # https://github.com/aws-actions/aws-cloudformation-github-deploy?tab=readme-ov-file#permissions
+                  - cloudformation:CreateStack
+                  - cloudformation:CreateChangeSet
+                  - cloudformation:DescribeStacks
+                  - cloudformation:DescribeChangeSet
+                  - cloudformation:DeleteChangeSet
+                  - cloudformation:ExecuteChangeSet
+                  # Especificos de lo que desplego
+                  - ec2:DescribeImages
+                  - ec2:RunInstances
+                  - ec2:DescribeInstances
+                  - ec2:CreateTags
+                  - lambda:CreateFunction
+                  - lambda:GetFunction
+                  - logs:CreateLogGroup
+                  - logs:PutRetentionPolicy
+                  - logs:DescribeLogGroups
+                  - iam:GetRole
+                  - iam:CreateRole
+                  - iam:PutRolePolicy
+                  - iam:PassRole
+                  - cognito-identity:CreateIdentityPool
+                  - cognito-identity:SetIdentityPoolRoles
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - ssm:GetParameters
+                Resource: "arn:aws:ssm:us-east-1:*:parameter/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64"

@@ -1,0 +1,384 @@
+AWSTemplateFormatVersion: "2010-09-09"
+
+Description: Portfolio serverless backend in Lambda
+
+Resources:
+  # Roles y permisos
+  MainLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: MainLambdaPortfolio
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - tag:GetResources
+                  - ec2:StartInstances
+                  - ec2:StopInstances
+                  - ec2:DescribeInstances
+                  - scheduler:GetSchedule
+                  - scheduler:CreateSchedule
+                  - scheduler:UpdateSchedule
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !GetAtt MainLambdaPortfolioLogGroup.Arn
+              - Effect: Allow
+                Action:
+                  - iam:PassRole
+                Resource: arn:aws:iam::*:role/*
+                Condition:
+                  StringLike:
+                    "iam:PassedToService": "scheduler.amazonaws.com"
+  ShutDownLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: ShutDownLambdaPortfolio
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - tag:GetResources
+                  - ec2:StopInstances
+                  - ec2:DescribeInstances
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !GetAtt ShutDownLambdaPortfolioLogGroup.Arn
+  EventBridgeAssumeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - scheduler.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: InvokeShutDownLambdaPortfolio
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource:
+                  - !GetAtt ShutDownLambda.Arn
+  CognitoPoolRolePolicy:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated:
+                - cognito-identity.amazonaws.com
+            Action:
+              - sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                "cognito-identity.amazonaws.com:aud": !Ref CognitoPool
+              ForAnyValue:StringLike:
+                "cognito-identity.amazonaws.com:amr": "unauthenticated"
+      Path: /
+      Policies:
+        - PolicyName: CognitoPoolPortfolio
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - cognito-identity:GetCredentialsForIdentity
+                  - lambda:InvokeFunction
+                Resource:
+                  - !GetAtt MainLambda.Arn
+  # Roles y permisos END
+  MainLambdaPortfolioLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: "/aws/lambda/MainLambdaPortfolio"
+      RetentionInDays: 30
+  ShutDownLambdaPortfolioLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: "/aws/lambda/ShutDownLambdaPortfolio"
+      RetentionInDays: 30
+  CognitoPoolRole:
+    Type: AWS::Cognito::IdentityPoolRoleAttachment
+    Properties:
+      IdentityPoolId: !Ref CognitoPool
+      Roles:
+        "unauthenticated": !GetAtt CognitoPoolRolePolicy.Arn
+  CognitoPool:
+    Type: AWS::Cognito::IdentityPool
+    Properties:
+      AllowUnauthenticatedIdentities: true
+  MainLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: MainLambdaPortfolio
+      Timeout: 180
+      Role: !GetAtt MainLambdaRole.Arn
+      Handler: index.lambda_handler
+      Runtime: python3.12
+      Environment:
+        Variables:
+          EventBridgeAssumeRoleARN: !GetAtt EventBridgeAssumeRole.Arn
+          ShutDownLambdaARN: !GetAtt ShutDownLambda.Arn
+      Code:
+        ZipFile: |
+          import boto3
+          from botocore.exceptions import ClientError
+          import json
+          import os
+          from datetime import datetime, timedelta
+          import dateutil.tz
+
+
+          def parse_arn(arn):
+              # http://docs.aws.amazon.com/general/latest/gr/aws-arns-and-namespaces.html
+              elements = arn.split(':', 5)
+              result = {
+                  'arn': elements[0],
+                  'partition': elements[1],
+                  'service': elements[2],
+                  'region': elements[3],
+                  'account': elements[4],
+                  'resource': elements[5],
+                  'resource_type': None
+              }
+              if '/' in result['resource']:
+                  result['resource_type'], result['resource'] = result['resource'].split(
+                      '/', 1)
+              elif ':' in result['resource']:
+                  result['resource_type'], result['resource'] = result['resource'].split(
+                      ':', 1)
+              return result
+
+
+          def schedule_shutdown_lambda(resourceName, resourceDetails):
+              try:
+                  eventBridgeScheduler = boto3.client('scheduler')
+                  currentTimezone = 'America/Caracas'
+                  scheduledTime = datetime.now(dateutil.tz.gettz(
+                      currentTimezone)) + timedelta(hours=1)
+                  scheduledTime = scheduledTime.strftime('%Y-%m-%dT%H:%M:%S')
+                  scheduleExists = eventBridgeScheduler.get_schedule(
+                      Name='{}_{}_{}'.format(
+                          resourceName, resourceDetails['service'], resourceDetails['resource_type']),
+                  )
+                  eventBridgeScheduler.update_schedule(
+                      Name='{}_{}_{}'.format(
+                          resourceName, resourceDetails['service'], resourceDetails['resource_type']),
+                      ActionAfterCompletion='DELETE',
+                      FlexibleTimeWindow={
+                          'Mode': 'OFF'
+                      },
+                      ScheduleExpression='at({})'.format(
+                          scheduledTime),  # at(2024-06-26T14:08:00)
+                      ScheduleExpressionTimezone=currentTimezone,
+                      State='ENABLED',
+                      Target={
+                          'Arn': os.environ['ShutDownLambdaARN'],
+                          'Input': '{{"project": "{}"}}'.format(resourceName),
+                          'RoleArn': os.environ['EventBridgeAssumeRoleARN'],
+                          # 'RetryPolicy': {
+                          # 	'MaximumEventAgeInSeconds': 123,
+                          # 	'MaximumRetryAttempts': 123
+                          # },
+                      }
+                  )
+              except ClientError as error:
+                  eventBridgeScheduler.create_schedule(
+                      Name='{}_{}_{}'.format(
+                          resourceName, resourceDetails['service'], resourceDetails['resource_type']),
+                      ActionAfterCompletion='DELETE',
+                      FlexibleTimeWindow={
+                          'Mode': 'OFF'
+                      },
+                      ScheduleExpression='at({})'.format(
+                          scheduledTime),  # at(2024-06-26T14:08:00)
+                      ScheduleExpressionTimezone=currentTimezone,
+                      State='ENABLED',
+                      Target={
+                          'Arn': os.environ['ShutDownLambdaARN'],
+                          'Input': '{{"project": "{}"}}'.format(resourceName),
+                          'RoleArn': os.environ['EventBridgeAssumeRoleARN'],
+                          # 'RetryPolicy': {
+                          # 	'MaximumEventAgeInSeconds': 123,
+                          # 	'MaximumRetryAttempts': 123
+                          # },
+                      }
+                  )
+
+
+          def lambda_handler(event, context):
+              response = {
+                  'statusCode': 404,
+                  'headers': {
+                      'Content-Type': 'application/json'
+                  },
+                  'body': {
+                      'data': None,
+                      'error': 'Not found',
+                  },
+              }
+
+              if (event['project']) and (event['project'] is not None):
+                  resourceFinder = boto3.client('resourcegroupstaggingapi')
+                  resources = resourceFinder.get_resources()
+                  for i in resources['ResourceTagMappingList']:
+                      name_tag = ''
+                      for j in i['Tags']:
+                          if (j['Key'] and j['Key'] == 'Name'):
+                              name_tag = j['Value']
+                              break
+
+                      if (name_tag == event['project']):
+                          params = parse_arn(i['ResourceARN'])
+
+                          try:
+                              if (params['resource_type'] == 'instance' and params['service'] == 'ec2'):
+                                  ec2 = boto3.resource('ec2')
+                                  instance = ec2.Instance(params['resource'])
+
+                                  # 0 : pending
+                                  # 16 : running - just retrieve IP and DNS
+                                  # 32 : shutting-down
+                                  # 48 : terminated
+                                  # 64 : stopping
+                                  # 80 : stopped - start it
+                                  if (instance.state['Code'] == 80):
+                                      instance.start()
+                                      instance.wait_until_running()
+                                      schedule_shutdown_lambda(event['project'], params)
+
+                                      response['statusCode'] = 200
+                                      response['body']['error'] = None
+                                      response['body']['data'] = {
+                                          'DNS': instance.public_dns_name,
+                                          'IP': instance.public_ip_address,
+                                      }
+                                  elif (instance.state['Code'] == 16):
+                                      schedule_shutdown_lambda(event['project'], params)
+
+                                      response['statusCode'] = 200
+                                      response['body']['error'] = None
+                                      response['body']['data'] = {
+                                          'DNS': instance.public_dns_name,
+                                          'IP': instance.public_ip_address,
+                                      }
+                                  else:
+                                      # ? enviar notificacion? no se
+                                      response['statusCode'] = 501
+                                      response['body']['error'] = 'Not Implemented'
+                                      response['body']['data'] = {
+                                          'DNS': instance.public_dns_name,
+                                          'IP': instance.public_ip_address,
+                                      }
+                              # elif ():
+                              else:
+                                  response['statusCode'] = 501
+                                  response['body']['error'] = 'Not Implemented'
+
+                              return response
+                          except AttributeError:
+                              continue
+              return response
+  ShutDownLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: ShutDownLambdaPortfolio
+      Timeout: 180
+      Role: !GetAtt ShutDownLambdaRole.Arn
+      Handler: index.lambda_handler
+      Runtime: python3.12
+      Code:
+        ZipFile: |
+          import boto3
+          import json
+
+
+          def parse_arn(arn):
+              # http://docs.aws.amazon.com/general/latest/gr/aws-arns-and-namespaces.html
+              elements = arn.split(':', 5)
+              result = {
+                  'arn': elements[0],
+                  'partition': elements[1],
+                  'service': elements[2],
+                  'region': elements[3],
+                  'account': elements[4],
+                  'resource': elements[5],
+                  'resource_type': None
+              }
+              if '/' in result['resource']:
+                  result['resource_type'], result['resource'] = result['resource'].split(
+                      '/', 1)
+              elif ':' in result['resource']:
+                  result['resource_type'], result['resource'] = result['resource'].split(
+                      ':', 1)
+              return result
+
+
+          def lambda_handler(event, context):
+              # print('Start - {}'.format(context.aws_request_id))
+              if (event['project']) and (event['project'] is not None):
+                  resourceFinder = boto3.client('resourcegroupstaggingapi')
+                  resources = resourceFinder.get_resources(TagFilters=[
+                      {
+                          'Key': 'Name',
+                          'Values': [
+                              event['project'],
+                          ]
+                      },
+                  ])
+
+                  for i in resources['ResourceTagMappingList']:
+                      params = parse_arn(i['ResourceARN'])
+                      if (params['resource_type'] == 'instance' and params['service'] == 'ec2'):
+                          ec2 = boto3.resource('ec2')
+                          instance = ec2.Instance(params['resource'])
+                          instance.stop()
+                          # instance.wait_until_stopped()
+                          print(
+                              'Stopped - {} - {} - {}'.format(event['project'], i, i['ResourceARN']))
+                      # elif ():
+                      else:
+                          print(
+                              'Not implemented - {} - {} - {}'.format(event['project'], i, i['ResourceARN']))
+
+              # print('End - {}'.format(context.aws_request_id))
+              return None

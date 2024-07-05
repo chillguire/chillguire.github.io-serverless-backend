@@ -1,0 +1,32 @@
+name: Deploy to AWS CloudFormation (EC2)
+
+on:
+  #push:
+  #  branches: ["main"]
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+jobs:
+  deploy:
+    name: Deploy Infra to cloudformation/AWS
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::062802124042:role/GitHubAction-AssumeRoleWithAction
+          role-session-name: GitHub_to_AWS_via_FederatedOIDC
+          aws-region: us-east-1
+
+      - name: Deploy with CloudFormation
+        uses: aws-actions/aws-cloudformation-github-deploy@v1
+        with:
+          name: EC2Stack
+          template: EC2-CF.yml
+          parameter-overrides: "dbURL=${{ secrets.dbURL }},sessionSecret=${{ secrets.sessionSecret }},mailAccount=${{ secrets.mailAccount }}"
+          #no-fail-on-empty-changeset: "1"
