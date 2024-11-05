@@ -16,6 +16,4 @@
 	* proteger/limitar con cognito
 		* https://docs.aws.amazon.com/location/latest/developerguide/authenticating-using-cognito.html
 	* Mejorar roles/policies en cuanto a resources, limitar por region, recurso/servicio, cuenta (?)
-* template del EC2 con SSL/HTTPS
-	* https://bansalanuj.com/https-aws-ec2-without-custom-domain
-	* https://gist.github.com/marianocordoba/cea09031a25d55365811f54aebd4bbef
+* what if certbot fails / nginx no levanta en el script de cloud-init / per-boot?

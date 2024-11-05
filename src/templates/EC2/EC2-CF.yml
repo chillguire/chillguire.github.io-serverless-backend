@@ -14,10 +14,10 @@ Parameters:
     NoEcho: true
   mailAccount:
     Type: String
-    Default: hola@hola.com
+    Default: admin@admin.co
 
 Resources:
-  EC2Instance:
+  EC2InstanceTEG:
     Type: AWS::EC2::Instance
     CreationPolicy:
       ResourceSignal:
@@ -29,8 +29,8 @@ Resources:
         - Key: Name
           Value: TEG-Software
       SecurityGroupIds:
-        - sg-08f7645e967dcfdab
-        - sg-0ed0873533f853c30
+        - sg-037e6599e37f00e16
+        - sg-0aab076e1f0b08dc7
       UserData:
         "Fn::Base64": !Sub |
           #!/bin/bash
@@ -38,7 +38,7 @@ Resources:
           # Error handling - ResourceSignal failure
           notify_failure() {
             echo 'ERROR'
-            /opt/aws/bin/cfn-signal -e 1 --stack=EC2Stack --resource=EC2Instance
+            /opt/aws/bin/cfn-signal -e 1 --stack=TEG-Software --resource=EC2InstanceTEG
             exit 1
           }
           trap 'notify_failure' ERR
@@ -49,7 +49,8 @@ Resources:
           touch /etc/yum.repos.d/mongodb-org-7.0.repo
           printf "[mongodb-org-7.0]\nname=MongoDB Repository\nbaseurl=https://repo.mongodb.org/yum/amazon/2023/mongodb-org/7.0/x86_64/\ngpgcheck=1\nenabled=1\ngpgkey=https://pgp.mongodb.com/server-7.0.asc\n" >> /etc/yum.repos.d/mongodb-org-7.0.repo
 
-          yum install -y mongodb-org
+          yum install -y mongodb-mongosh-shared-openssl3
+          yum install -y mongodb-org --nogpgcheck
 
           systemctl start mongod
 
@@ -74,38 +75,42 @@ Resources:
 
           sudo -H -u ec2-user bash -c '. ~/.nvm/nvm.sh && nvm ls && nvm use --lts && node -v && npm -v && npm ci && npm install pm2 -g && pm2 start server.js'
 
-          printf "user nginx;\nworker_processes auto;\nerror_log /var/log/nginx/error.log notice;\npid /run/nginx.pid;\ninclude /usr/share/nginx/modules/*.conf;\nevents {\nworker_connections 1024;\n}\nhttp {\nsendfile            on;\ntcp_nopush          on;\nkeepalive_timeout   65;\ntypes_hash_max_size 4096;\ninclude             /etc/nginx/mime.types;\ndefault_type        application/octet-stream;\ninclude /etc/nginx/conf.d/*.conf;\nserver {\nlisten       80;\nlisten       [::]:80;\nserver_name  _;\nroot         /usr/share/nginx/html;\ninclude /etc/nginx/default.d/*.conf;\nlocation / {\nproxy_pass http://localhost:3000;\nproxy_http_version 1.1;\nproxy_set_header Upgrade \$http_upgrade;\nproxy_set_header Connection 'upgrade';\nproxy_set_header Host \$host;\nproxy_cache_bypass \$http_upgrade;\n}\n}\n}" > /etc/nginx/nginx.conf
 
+          touch preload.js
+          printf "db.users.insertOne({\n\t\tavatar: {\n\t\t\turl: 'https://iupac.org/wp-content/uploads/2018/05/default-avatar.png',\n\t\t\tfilename: 'default-avatar'\n\t\t},\n\t\ttype: 'Admin',\n\t\tfirstName: 'Admin',\n\t\tlastName: 'Admin',\n\t\tusername: '$MAIL_ACCOUNT',\n\t\temail: '$MAIL_ACCOUNT',\n\t\tsalt: '3c2d03402c934af1369b2d3795a32dc1c072df72ca21f9c737f719148b963601',\n\t\thash: '89f1ef222c55eed9f659cf7a64fb1dd638d0202b14011e01b2759b8a864754f0e5ccdc99451f807c04a1d83820af2beda333ec2db42d4b20c0af2f57a66395a37ba52b585fc75c759db527127bab5367a01c88e4f028942ca61ff9dd63783cad9931d072b8b4cc2c42418263794ba4f9dbe3e463f7b72c582acd0c4c1803d92f9e71be59303041911b835d20e727b87f944d7f6ea7f295a0cf5ac1a84086daf9fc6901993b80d66cfbe197a10d09e4db967cf95704211befe8adc92d8b6091d89641fb72f1bc1a82a3869e9550aa4346afb68c6c35521e5e7abe665af7f3485f7ac45465adbf9816a0e376958d1ee6c2194d6e8f7977a17a7ee947e78f13293e7eeb298d34aa1f4d0d602c9b9dcc21036f056c41491b9e6f77b9c0406bffccbf935c5f69ba87ee803caf64531a87b35ca1f68eeedea9e33148e4f9a6bba31845702d9cac82d2a27400657e37ddb0870995ed47c5cd0b6b688db456be29afd3c85abdfbc83aad1fcf26d08850e27bef3472cbfe2bc5b5d4fa5e0b5a399cd058518911c6140919c97f5ec9aa9eb9f4172bc834c218600e75a949b20025f3e1d3dbc68f3d69bb76ccb984fa1fdb6bb42ab49f7c5856ed4f1b41e1f7674577e25ae152fb936557d43490013e94d81a71257d736c7f3c4da127734e35dc68200e0c0fd945b68ba82c2fb6536c9000dfd6f17284fd7f3578e620f9e3accd3c7653ff83',\n})\n" >> preload.js
+          mongosh teg preload.js
+
+          CURRENT_IP=$(curl http://checkip.amazonaws.com)
+          printf "user nginx;\nworker_processes auto;\nerror_log /var/log/nginx/error.log notice;\npid /run/nginx.pid;\n\ninclude /usr/share/nginx/modules/*.conf;\n\nevents {\n\tworker_connections 1024;\n}\n\nhttp {\n\tsendfile\t\t\ton;\n\ttcp_nopush\t\t\ton;\n\tkeepalive_timeout\t65;\n\ttypes_hash_max_size\t4096;\n\n\tinclude\t\t\t/etc/nginx/mime.types;\n\tdefault_type\tapplication/octet-stream;\n\n\tinclude /etc/nginx/conf.d/*.conf;\n\n\tserver {\n\t\tlisten\t\t80;\n\t\tlisten\t\t[::]:80;\n\t\tserver_name\t_;\n\t\troot\t\t/usr/share/nginx/html;\n\n\t\tinclude /etc/nginx/default.d/*.conf;\n\n\t\tlocation / {\n\t\t\tproxy_pass http://127.0.0.1:3000;\n\t\t}\n\n\t\terror_page 404 /404.html;\n\t\tlocation = /404.html {\n\t\t}\n\n\t\terror_page 500 502 503 504 /50x.html;\n\t\tlocation = /50x.html {\n\t\t}\n\t}\n\n\tserver {\n\t\tserver_name $CURRENT_IP.nip.io;\n\n\t\tlocation / {\n\t\t\tproxy_pass http://127.0.0.1:3000;\n\t\t}\n\t}\n}" > /etc/nginx/nginx.conf
+
+          sudo python3 -m venv /opt/certbot/
+          sudo /opt/certbot/bin/pip install --upgrade pip
+          sudo /opt/certbot/bin/pip install certbot certbot-nginx
+          sudo ln -s /opt/certbot/bin/certbot /usr/bin/certbot
+
+          sudo certbot --nginx -d $CURRENT_IP.nip.io --agree-tos --register-unsafely-without-email
+
+          pkill -f nginx & wait $!
           service nginx restart
 
           # Script que inicia el servicio cuando se reanuda la instancia
           cd /var/lib/cloud/scripts/per-boot
           sudo touch start.sh
           chmod 755 start.sh
-          printf '#!/bin/bash\n\nsu - ec2-user -c "cd /home/ec2-user/TEG-Software && git pull && pm2 start server.js"\nsystemctl start nginx' > /var/lib/cloud/scripts/per-boot/start.sh
+
+          printf '#!/bin/bash\n\nsu - ec2-user -c "cd /home/ec2-user/TEG-Software && git pull && pm2 start server.js"\n' > /var/lib/cloud/scripts/per-boot/start.sh
+          printf 'printf "\\ny\\n" | sudo certbot delete\n' >> /var/lib/cloud/scripts/per-boot/start.sh
+          printf 'CURRENT_IP=$(curl http://checkip.amazonaws.com)\n' >> /var/lib/cloud/scripts/per-boot/start.sh
+          printf 'printf "user nginx;\\nworker_processes auto;\\nerror_log /var/log/nginx/error.log notice;\\npid /run/nginx.pid;\\n\\ninclude /usr/share/nginx/modules/*.conf;\\n\\nevents {\\n\\tworker_connections 1024;\\n}\\n\\nhttp {\\n\\tsendfile\\t\\t\\ton;\\n\\ttcp_nopush\\t\\t\\ton;\\n\\tkeepalive_timeout\\t65;\\n\\ttypes_hash_max_size\\t4096;\\n\\n\\tinclude\\t\\t\\t/etc/nginx/mime.types;\\n\\tdefault_type\\tapplication/octet-stream;\\n\\n\\tinclude /etc/nginx/conf.d/*.conf;\\n\\n\\tserver {\\n\\t\\tlisten\\t\\t80;\\n\\t\\tlisten\\t\\t[::]:80;\\n\\t\\tserver_name\\t_;\\n\\t\\troot\\t\\t/usr/share/nginx/html;\\n\\n\\t\\tinclude /etc/nginx/default.d/*.conf;\\n\\n\\t\\tlocation / {\\n\\t\\t\\tproxy_pass http://127.0.0.1:3000;\\n\\t\\t}\\n\\n\\t\\terror_page 404 /404.html;\\n\\t\\tlocation = /404.html {\\n\\t\\t}\\n\\n\\t\\terror_page 500 502 503 504 /50x.html;\\n\\t\\tlocation = /50x.html {\\n\\t\\t}\\n\\t}\\n\\n\\tserver {\\n\\t\\tserver_name $CURRENT_IP.nip.io;\\n\\n\\t\\tlocation / {\\n\\t\\t\\tproxy_pass http://127.0.0.1:3000;\\n\\t\\t}\\n\\t}\\n}" > /etc/nginx/nginx.conf\n' >> /var/lib/cloud/scripts/per-boot/start.sh
+          printf 'systemctl start nginx\nsudo certbot --nginx -d $CURRENT_IP.nip.io --agree-tos --register-unsafely-without-email\npkill -f nginx & wait $!\nservice nginx restart' >> /var/lib/cloud/scripts/per-boot/start.sh
 
           # Error handling - ResourceSignal success
           echo 'todo fino'
-          /opt/aws/bin/cfn-signal -e 0 --stack=EC2Stack --resource=EC2Instance
+          /opt/aws/bin/cfn-signal -e 0 --stack=TEG-Software --resource=EC2InstanceTEG
 
           sudo shutdown now -h # turn off after creation
-
-          # --- LO DE CADDY PARA HTTPS ---
-          #yum install yum-plugin-copr -y
-          #yum -y copr enable @caddy/caddy epel-7-$(arch)
-          #yum install caddy -y
-
-          #systemctl stop caddy
-          #touch Caddyfile
-
-          #CURRENT_IP=$(curl http://checkip.amazonaws.com)
-          #printf "$CURRENT_IP.nip.io {\n    reverse_proxy localhost:3000\n}" > Caddyfile
-
-          #caddy fmt --overwrite
-          #caddy start
-          # --- LO DE CADDY PARA HTTPS ---
 Outputs:
   PublicIp:
-    Value: !GetAtt EC2Instance.PublicIp
+    Value: !GetAtt EC2InstanceTEG.PublicIp
   PublicDNS:
-    Value: !GetAtt EC2Instance.PublicDnsName
+    Value: !GetAtt EC2InstanceTEG.PublicDnsName
