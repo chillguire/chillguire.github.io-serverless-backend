@@ -28,7 +28,7 @@ Resources:
       Tags:
         - Key: Name
           Value: TEG-Software
-      SubnetId: vpc-068a839e197674725 # manual por ahora pq me da flojera
+      SubnetId: subnet-0fefa41d9f12e5b27 # manual por ahora pq me da flojera
       SecurityGroupIds:
         - sg-0a8c809b4b0423210 # manual por ahora pq me da flojera
         - sg-0fb3ddd267b47751e # manual por ahora pq me da flojera
